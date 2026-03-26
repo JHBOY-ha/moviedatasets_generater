@@ -252,12 +252,15 @@ training while keeping style language minimal.
 
 Rules:
 - Focus on subject, setting, action, visible objects, and spatial relationships.
-- Use generic identities only. Never use character names, actor names, real-person names, movie titles, or franchise names.
+- When gender is visually apparent, use "man" or "woman" instead of "person". Use "person" or "figure" only when gender is genuinely unclear (e.g., distant silhouettes, heavy gear obscuring the body).
+- Never use character names, actor names, real-person names, movie titles, or franchise names.
+- Never use family or role words: father, mother, husband, wife, son, daughter, boss, leader, commander, scientist, politician, judge, witness, suspect, hero, villain. Use "man", "woman", "person", or "figure" instead.
 - Do not infer plot, relationships, professions, or motivations unless they are directly visible.
-- Do not quote dialogue, subtitles, or text on screen.
+- Do not quote dialogue, subtitles, or text on screen. Do not use quotation marks.
+- Write as a single continuous description. Do NOT use meta-references like "in the first frame", "in later frames", "across the frames", or "in earlier frames". Describe the scene as one unified moment or short action.
 - Prefer one detailed sentence. Two sentences maximum.
-- Keep the caption between 22 and 55 English words.
 - Use concrete visual details, not aesthetic praise.
+- Be precise about objects: distinguish wheeled vs tracked vehicles, types of weapons, architectural features, etc. Only describe what you can clearly identify.
 - Return JSON only with keys:
   caption, confidence, entities, scene_type, style_terms_used, reason
 
@@ -273,22 +276,22 @@ Example environment:
 
 Example person-focused:
 {
-  "caption": "A person wearing a dark coat and brimmed hat stands near a window in a modest interior, turning slightly while soft light falls across nearby furniture and pale walls.",
+  "caption": "A woman in a dark coat and brimmed hat stands near a window in a modest interior, turning slightly while soft light falls across nearby furniture and pale walls.",
   "confidence": 0.9,
-  "entities": ["person", "dark coat", "brimmed hat", "window", "interior"],
+  "entities": ["woman", "dark coat", "brimmed hat", "window", "interior"],
   "scene_type": "person-focused",
   "style_terms_used": [],
-  "reason": "Uses generic identity and visible clothing, pose, and setting."
+  "reason": "Uses visible gender and clothing, pose, and setting."
 }
 
-Example black-and-white:
+Example action:
 {
-  "caption": "A black-and-white indoor scene shows several people seated at long tables with papers and microphones, while one figure gestures forward under even overhead lighting.",
-  "confidence": 0.88,
-  "entities": ["people", "tables", "papers", "microphones"],
-  "scene_type": "black-and-white",
-  "style_terms_used": ["black-and-white"],
-  "reason": "Covers layout, objects, and action without any proper names or plot claims."
+  "caption": "A man in a gray jacket sprints across a rain-soaked parking lot toward a black SUV, splashing through puddles while headlights from oncoming traffic illuminate the wet asphalt.",
+  "confidence": 0.92,
+  "entities": ["man", "gray jacket", "parking lot", "SUV", "puddles", "headlights"],
+  "scene_type": "action",
+  "style_terms_used": [],
+  "reason": "Describes subject, motion, setting, and lighting conditions from visible details."
 }
 """.strip()
 
@@ -668,7 +671,7 @@ def build_generation_messages(video_name: str, features: VideoFeatures) -> list[
     prompt = (
         "Generate one detailed English caption for this short training clip.\n"
         "Requirements:\n"
-        "- 22 to 55 words\n"
+        "- Keep it concise\n"
         "- One sentence preferred, two sentences maximum\n"
         "- Describe visible facts only\n"
         "- Use generic identities only\n"
@@ -696,7 +699,11 @@ def build_generation_messages(video_name: str, features: VideoFeatures) -> list[
     ]
 
 
-def build_repair_messages(candidate: CaptionCandidate, errors: list[str]) -> list[dict[str, str]]:
+def build_repair_messages(
+    candidate: CaptionCandidate,
+    errors: list[str],
+    features: VideoFeatures | None = None,
+) -> list[dict[str, Any]]:
     repair_prompt = {
         "caption": candidate.caption,
         "confidence": candidate.confidence,
@@ -706,17 +713,29 @@ def build_repair_messages(candidate: CaptionCandidate, errors: list[str]) -> lis
         "reason": candidate.reason,
         "validation_errors": errors,
     }
-    user_prompt = (
-        "Rewrite only the caption so it satisfies the rules.\n"
-        "Keep the same visible content.\n"
-        "Do not add names, titles, dialogue, plot, relationship guesses, or aesthetic filler.\n"
-        "Keep the JSON schema unchanged.\n"
-        "Return JSON only.\n\n"
+    text = (
+        "The caption below failed validation. Rewrite ONLY the caption to fix the listed errors.\n"
+        "Keep the same visible content but:\n"
+        "- Replace family/role words (father, mother, boss, scientist, etc.) with generic terms (man, woman, person, figure)\n"
+        "- Remove any quoted text or dialogue references\n"
+        "- Keep it concise, one or two sentences\n"
+        "- Do not add names, titles, plot, relationship guesses, or aesthetic filler\n"
+        "- Keep the JSON schema unchanged\n"
+        "- Return JSON only\n\n"
         f"{json.dumps(repair_prompt, ensure_ascii=True)}"
     )
+    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    if features:
+        for frame in features.frames:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": frame.image_url, "detail": "low"},
+                }
+            )
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": content},
     ]
 
 
@@ -797,7 +816,7 @@ def post_chat_completion(
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
-    stripped = text.strip()
+    stripped = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     if stripped.startswith("```"):
         stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
         stripped = re.sub(r"\s*```$", "", stripped)
@@ -879,20 +898,31 @@ def ascii_ratio(text: str) -> float:
     return printable / len(text)
 
 
+_QUOTE_CHARS = re.compile("[\u0022\u201c\u201d\u201e\u201f]")
+
+
 def has_dialogue_markers(text: str) -> bool:
-    return bool(
-        re.search(
-            r"['\"“”‘’]|"
-            r"\b(says|said|speaks|speaking|subtitle|subtitles|captioned|text on screen|dialogue)\b",
-            text,
-            re.IGNORECASE,
-        )
-    )
+    if _QUOTE_CHARS.search(text):
+        return True
+    if re.search(
+        r"\b(says|said|speaks|speaking|subtitle|subtitles|captioned|text on screen|dialogue)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
 
 
 def match_any(text: str, terms: Iterable[str]) -> bool:
     lowered = text.lower()
-    return any(term in lowered for term in terms)
+    for term in terms:
+        if " " in term:
+            if term in lowered:
+                return True
+        else:
+            if re.search(r"\b" + re.escape(term) + r"\b", lowered):
+                return True
+    return False
 
 
 def infer_categories(caption: str, entities: list[str]) -> set[str]:
@@ -929,9 +959,6 @@ def validate_candidate(candidate: CaptionCandidate) -> list[str]:
         errors.append("caption is empty")
         return errors
 
-    words = caption_word_count(caption)
-    if words < 22 or words > 55:
-        errors.append("caption must contain 22 to 55 English words")
     if sentence_count(caption) > 2:
         errors.append("caption must contain one or two sentences")
     if contains_cjk(caption):
@@ -952,9 +979,6 @@ def validate_candidate(candidate: CaptionCandidate) -> list[str]:
         errors.append("caption contains relationship or role inference")
     if match_any(caption, STORY_INFERENCE_TERMS):
         errors.append("caption contains plot or motivation inference")
-    categories = infer_categories(caption, candidate.entities)
-    if len(categories) < 2:
-        errors.append("caption must include at least two information categories")
     if not candidate.scene_type:
         errors.append("scene_type is missing")
     if not candidate.reason:
@@ -962,37 +986,12 @@ def validate_candidate(candidate: CaptionCandidate) -> list[str]:
     return errors
 
 
-def fallback_caption(features: VideoFeatures) -> tuple[str, str]:
-    if features.is_bw:
-        return (
-            "A black-and-white scene shows people and furnishings arranged in an interior space, with strong tonal contrast, steady framing, and visible tables, walls, or other set details shaping the composition.",
-            "black-and-white",
-        )
-    if features.group_present:
-        return (
-            "Several people occupy an indoor setting, with seated or standing figures arranged around furniture and objects while the camera holds on their positions, gestures, and the surrounding room layout.",
-            "group-interior",
-        )
-    if features.person_present:
-        return (
-            "A person remains the main focus within a built environment, with visible clothing, posture, and nearby objects defining the shot as the figure shifts slightly within the frame.",
-            "person-focused",
-        )
-    if features.brightness_max - features.brightness_min > 45:
-        return (
-            "An exterior view shows open space, layered background elements, and changing light across the frame, with landscape or street details providing depth and gentle motion.",
-            "street-exterior",
-        )
-    return (
-        "An environment-focused shot shows open space, structural elements, and background depth, with lighting, surfaces, and distant forms providing most of the visible detail rather than a single dominant person.",
-        "environment",
-    )
-
 
 def generate_candidate(
     config: APIConfig,
     video_name: str,
     features: VideoFeatures,
+    max_repairs: int = 2,
 ) -> CaptionCandidate:
     response_text = post_chat_completion(config, build_generation_messages(video_name, features))
     payload = extract_json_object(response_text)
@@ -1001,22 +1000,28 @@ def generate_candidate(
     if not errors:
         return candidate
 
-    repair_text = post_chat_completion(config, build_repair_messages(candidate, errors))
-    repaired_payload = extract_json_object(repair_text)
-    repaired = build_candidate_from_payload(repaired_payload)
-    repaired.repaired = True
-    repair_errors = validate_candidate(repaired)
-    if not repair_errors:
-        return repaired
+    current = candidate
+    current_errors = errors
+    for attempt in range(max_repairs):
+        log(f"  repair attempt {attempt + 1}/{max_repairs}: {'; '.join(current_errors)}")
+        repair_text = post_chat_completion(
+            config, build_repair_messages(current, current_errors, features)
+        )
+        repaired_payload = extract_json_object(repair_text)
+        repaired = build_candidate_from_payload(repaired_payload)
+        repaired.repaired = True
+        current_errors = validate_candidate(repaired)
+        if not current_errors:
+            return repaired
+        current = repaired
 
-    fallback_text, fallback_scene_type = fallback_caption(features)
     return CaptionCandidate(
-        caption=fallback_text,
-        confidence=min(candidate.confidence, repaired.confidence, 0.5),
-        entities=repaired.entities or candidate.entities,
-        scene_type=repaired.scene_type or candidate.scene_type or fallback_scene_type,
+        caption="",
+        confidence=0.0,
+        entities=current.entities or candidate.entities,
+        scene_type=current.scene_type or candidate.scene_type,
         style_terms_used=[],
-        reason="Fallback used after validation failure: " + "; ".join(repair_errors),
+        reason="Validation failed after repair: " + "; ".join(current_errors),
         repaired=True,
         fallback_used=True,
     )
@@ -1098,28 +1103,13 @@ def process_rows(
         except FatalAPIError:
             raise
         except Exception as exc:
-            features = None
-            fallback_text, fallback_scene = fallback_caption(
-                VideoFeatures(
-                    duration=0.0,
-                    width=0,
-                    height=0,
-                    timestamps=[],
-                    frames=[],
-                    brightness_min=0.0,
-                    brightness_max=0.0,
-                    is_bw=False,
-                    person_present=False,
-                    group_present=False,
-                )
-            )
             candidate = CaptionCandidate(
-                caption=fallback_text,
+                caption="",
                 confidence=0.0,
                 entities=[],
-                scene_type=fallback_scene,
+                scene_type="",
                 style_terms_used=[],
-                reason=f"Fallback used after processing error: {exc}",
+                reason=f"Processing error: {exc}",
                 fallback_used=True,
             )
 
@@ -1140,9 +1130,10 @@ def process_rows(
             }
         )
 
-    if not dry_run:
-        write_csv_atomic(metadata_path, fieldnames, updated_rows)
-    write_report(report_path, report_rows)
+        if not dry_run:
+            write_csv_atomic(metadata_path, fieldnames, updated_rows)
+        write_report(report_path, report_rows)
+
     return updated_rows, report_rows
 
 

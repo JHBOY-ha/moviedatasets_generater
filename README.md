@@ -128,13 +128,13 @@ clip_002.mp4,"Close-up of hands typing on a laptop keyboard in a modern office w
 
 生成的描述会经过严格校验以保证训练数据质量：
 
-- **22–55 个单词**，最多 2 个句子
+- 最多 2 个句子
 - 禁止风格词（`cinematic`、`masterpiece`、`4k`、`photorealistic` 等）
 - 禁止不确定用语（`maybe`、`possibly`、`appears to be`）
 - 禁止出现人名、角色名或电影名称
 - 禁止推断人物关系或情节 — 仅描述画面中直接可见的内容
 
-未通过校验的描述会进入修复循环，修复失败则生成兜底描述。
+未通过校验的描述会进入修复循环（最多 2 次），修复失败则留空以便后续重试。
 
 ## 流水线示意图
 
