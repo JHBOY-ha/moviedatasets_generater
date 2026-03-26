@@ -35,10 +35,29 @@ ANALYSIS_HEIGHT = 90
 LOW_CONFIDENCE_THRESHOLD = 0.75
 RETRYABLE_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
-CAPTION_API_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-CAPTION_API_KEY = ""
-CAPTION_MODEL = "qwen3-vl-plus"
-CAPTION_TIMEOUT = 60.0
+CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+
+_FALLBACK_CONFIG = {
+    "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "",
+    "model": "qwen3-vl-plus",
+    "timeout": 60.0,
+}
+
+
+def _load_config() -> dict[str, Any]:
+    if CONFIG_PATH.exists():
+        with CONFIG_PATH.open(encoding="utf-8") as fh:
+            try:
+                cfg = json.load(fh)
+            except json.JSONDecodeError:
+                print(f"WARNING: {CONFIG_PATH} is not valid JSON, using defaults")
+                return dict(_FALLBACK_CONFIG)
+        merged = dict(_FALLBACK_CONFIG)
+        merged.update({k: v for k, v in cfg.items() if k in _FALLBACK_CONFIG})
+        return merged
+    return dict(_FALLBACK_CONFIG)
+
 
 BANNED_STYLE_TERMS = (
     "cinematic",
@@ -379,24 +398,25 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_api_config(args: argparse.Namespace) -> APIConfig:
-    base_url = (args.api_base_url or os.environ.get("CAPTION_API_BASE_URL", CAPTION_API_BASE_URL)).strip()
-    api_key = (args.api_key or os.environ.get("CAPTION_API_KEY", CAPTION_API_KEY)).strip()
-    model = (args.model or os.environ.get("CAPTION_MODEL", CAPTION_MODEL)).strip()
+    cfg = _load_config()
+    base_url = (args.api_base_url or os.environ.get("CAPTION_API_BASE_URL", cfg["api_base_url"])).strip()
+    api_key = (args.api_key or os.environ.get("CAPTION_API_KEY", cfg["api_key"])).strip()
+    model = (args.model or os.environ.get("CAPTION_MODEL", cfg["model"])).strip()
 
     missing = []
     if not base_url:
-        missing.append("CAPTION_API_BASE_URL")
+        missing.append("api_base_url")
     if not api_key:
-        missing.append("CAPTION_API_KEY")
+        missing.append("api_key")
     if not model:
-        missing.append("CAPTION_MODEL")
+        missing.append("model")
     if missing:
         raise SystemExit(
-            "Missing API config. Set values via CLI flags, env vars, or the defaults at the top of caption_dataset.py: "
+            f"Missing API config. Set values via CLI flags, env vars, or config.json ({CONFIG_PATH}): "
             + ", ".join(missing)
         )
 
-    timeout_value = args.timeout if args.timeout is not None else os.environ.get("CAPTION_TIMEOUT", str(CAPTION_TIMEOUT))
+    timeout_value = args.timeout if args.timeout is not None else os.environ.get("CAPTION_TIMEOUT", str(cfg["timeout"]))
     try:
         timeout = float(timeout_value)
     except ValueError as exc:

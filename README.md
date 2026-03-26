@@ -37,6 +37,23 @@ sudo apt-get install ffmpeg
 > [!NOTE]
 > 无需安装任何第三方 Python 依赖，仅使用标准库。
 
+## 快速开始
+
+```bash
+# 1. 克隆项目
+git clone <repo-url> && cd moviedatasets_generater
+
+# 2. 复制配置模板并填入 API Key
+cp config.example.json config.json
+# 编辑 config.json，将 api_key 设为你的 DashScope API Key
+
+# 3. 提取片段
+python preprocess.py --input-video /path/to/movie.mp4
+
+# 4. 生成描述
+python caption_dataset.py --metadata dataset_movie/metadata.csv
+```
+
 ## 使用方法
 
 ### 阶段一 — 提取片段
@@ -80,16 +97,22 @@ python caption_dataset.py --metadata dataset_movie/metadata.csv
 | `--api-key` | — | 覆盖 API 密钥 |
 | `--model` | `qwen3-vl-plus` | 覆盖视觉模型名称 |
 
-### 环境变量
+### 配置文件
 
-描述生成脚本支持以下环境变量（命令行参数优先级更高）：
+项目根目录下的 `config.json` 存储 API 配置（已包含默认模板）：
 
-```bash
-export CAPTION_API_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
-export CAPTION_API_KEY="sk-..."
-export CAPTION_MODEL="qwen3-vl-plus"
-export CAPTION_TIMEOUT=60
+```json
+{
+    "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "sk-...",
+    "model": "qwen3-vl-plus",
+    "timeout": 60.0
+}
 ```
+
+配置优先级：**命令行参数 > 环境变量 > config.json > 内置默认值**
+
+环境变量仍然可用：`CAPTION_API_BASE_URL`、`CAPTION_API_KEY`、`CAPTION_MODEL`、`CAPTION_TIMEOUT`。
 
 ## 输出格式
 
