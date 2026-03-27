@@ -458,6 +458,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Generate captions and report output without updating metadata.csv.",
     )
+    parser.add_argument(
+        "--frame-count",
+        type=int,
+        default=FRAME_COUNT,
+        help=f"Number of frames to sample per clip (default: {FRAME_COUNT}).",
+    )
     parser.add_argument("--api-base-url", help="Override API base URL.")
     parser.add_argument("--api-key", help="Override API key.")
     parser.add_argument("--model", help="Override model name.")
@@ -674,9 +680,9 @@ def analyze_raw_frame(raw: bytes) -> tuple[float, float, float]:
     return avg_brightness, avg_saturation, skin_ratio
 
 
-def gather_video_features(video_path: Path) -> VideoFeatures:
+def gather_video_features(video_path: Path, frame_count: int = FRAME_COUNT) -> VideoFeatures:
     info = probe_video(video_path)
-    timestamps = build_sample_timestamps(info.duration, FRAME_COUNT)
+    timestamps = build_sample_timestamps(info.duration, frame_count)
     frames: list[FrameAnalysis] = []
 
     for timestamp in timestamps:
@@ -842,6 +848,20 @@ def parse_chat_content(payload: dict[str, Any]) -> str:
         joined = "\n".join(part.strip() for part in parts if part.strip())
         if joined:
             return joined
+    # Some OpenAI-compatible deployments expose the generated text via
+    # `reasoning`/`reasoning_content` while leaving `content` as null.
+    for alt_key in ("reasoning", "reasoning_content"):
+        alt_content = message.get(alt_key)
+        if isinstance(alt_content, str) and alt_content.strip():
+            return alt_content.strip()
+        if isinstance(alt_content, list):
+            parts = []
+            for item in alt_content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+            joined = "\n".join(part.strip() for part in parts if part.strip())
+            if joined:
+                return joined
     raise CaptionError("API response did not contain text content")
 
 
@@ -1149,6 +1169,7 @@ def process_rows(
     overwrite: str,
     only_filter: set[str] | None,
     dry_run: bool,
+    frame_count: int,
     config: APIConfig,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     report_rows: list[dict[str, str]] = []
@@ -1188,7 +1209,7 @@ def process_rows(
             continue
 
         try:
-            features = gather_video_features(video_path)
+            features = gather_video_features(video_path, frame_count=frame_count)
             candidate = generate_candidate(config, video_name, features)
         except FatalAPIError:
             raise
@@ -1234,6 +1255,8 @@ def main() -> int:
     fieldnames, rows = read_metadata(metadata_path)
     config = load_api_config(args)
     only_filter = parse_only_filter(args.only)
+    if args.frame_count < 1:
+        raise SystemExit("--frame-count must be at least 1")
 
     try:
         _updated_rows, report_rows = process_rows(
@@ -1244,6 +1267,7 @@ def main() -> int:
             overwrite=args.overwrite,
             only_filter=only_filter,
             dry_run=args.dry_run,
+            frame_count=args.frame_count,
             config=config,
         )
     except FatalAPIError as exc:
