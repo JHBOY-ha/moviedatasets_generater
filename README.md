@@ -1,6 +1,6 @@
 # Movie Datasets Generator
 
-从电影长片和长视频中生成高质量训练数据集的两阶段流水线工具，专为 [DiffSynth-Studio](https://github.com/modelscope/DiffSynth-Studio) 风格的训练数据（LoRA、视频生成模型）设计。
+从电影长片和长视频中生成高质量训练数据集的两阶段流水线工具，专为 [DiffSynth-Studio](https://github.com/modelscope/DiffSynth-Studio) 风格的训练数据（LoRA、视频生成模型）设计，当前的 caption 流程已针对 Wan2.1 一类视频 LoRA 训练做过强化。
 
 ## 概述
 
@@ -8,7 +8,7 @@
 
 **阶段一 — 预处理**（`preprocess.py`）：检测场景切换、规避对话片段、评估画面质量，导出短视频片段及元数据。
 
-**阶段二 — 生成描述**（`caption_dataset.py`）：从每个片段中采样帧画面，发送至视觉大模型，对返回的描述进行严格校验，最终写入 `metadata.csv`。
+**阶段二 — 生成描述**（`caption_dataset.py`）：从每个片段中采样多帧画面并附带时间戳，发送至视觉大模型，对返回的描述进行严格校验，最终写入 `metadata.csv`。
 
 ### 功能特性
 
@@ -16,7 +16,10 @@
 - 利用内嵌字幕轨自动规避对话片段
 - 画面质量评分（亮度、细节、运动量、肤色检测）
 - 自动检测并裁剪黑边
-- AI 驱动的描述生成，附带结构化校验（禁止风格词、角色名、情节推断）
+- AI 驱动的描述生成，输出更适合视频 LoRA 的长 caption，强调动作、镜头运动、光线、色彩、构图与质感
+- 每个采样帧会附带时间戳信息，帮助模型理解片段中的时序变化
+- 兼容部分 OpenAI-compatible 后端把文本放在 `reasoning` / `reasoning_content` 字段中的返回格式
+- 结构化校验（禁止风格词、角色名、情节推断；要求运动与镜头线索）
 - 无效描述自动修复与重试机制
 - 生成详细报告，包含置信度评分
 
@@ -52,6 +55,9 @@ python preprocess.py --input-video /path/to/movie.mp4
 
 # 4. 生成描述
 python caption_dataset.py --metadata dataset_movie/metadata.csv
+
+# 可选：增加采样帧数量以强化时序信息
+python caption_dataset.py --metadata dataset_movie/metadata.csv --frame-count 7
 ```
 
 ## 使用方法
@@ -83,7 +89,7 @@ python preprocess.py --input-video /path/to/movie.mp4
 python caption_dataset.py --metadata dataset_movie/metadata.csv
 ```
 
-更新 `metadata.csv` 中的 `prompt` 列，并生成 `caption_report.csv` 详细报告。
+更新 `metadata.csv` 中的 `prompt` 列，并生成 `caption_report.csv` 详细报告。默认会均匀采样 5 帧，每帧连同其时间戳一起送入视觉模型。
 
 #### 描述生成参数
 
@@ -93,9 +99,11 @@ python caption_dataset.py --metadata dataset_movie/metadata.csv
 | `--overwrite` | `blank` | `blank`（仅填充空白）或 `all`（全部重写） |
 | `--only` | — | 指定要处理的视频文件名，逗号分隔 |
 | `--dry-run` | — | 预览描述结果，不写入元数据文件 |
+| `--frame-count` | `5` | 每个片段采样的帧数，至少为 1 |
 | `--api-base-url` | DashScope URL | 覆盖视觉 API 端点 |
 | `--api-key` | — | 覆盖 API 密钥 |
 | `--model` | `qwen3-vl-plus` | 覆盖视觉模型名称 |
+| `--timeout` | `60.0` | 覆盖 API 超时秒数 |
 
 ### 配置文件
 
@@ -114,25 +122,37 @@ python caption_dataset.py --metadata dataset_movie/metadata.csv
 
 环境变量仍然可用：`CAPTION_API_BASE_URL`、`CAPTION_API_KEY`、`CAPTION_MODEL`、`CAPTION_TIMEOUT`。
 
+接口兼容性说明：
+
+- 默认按 OpenAI `chat/completions` 兼容接口调用
+- 优先读取返回中的 `message.content`
+- 若某些兼容后端将文本放在 `message.reasoning` 或 `message.reasoning_content`，脚本也会自动回退解析
+
 ## 输出格式
 
 ### metadata.csv
 
 ```csv
 video,prompt
-clip_001.mp4,"A woman in a red coat walks through a dimly lit corridor, glancing over her shoulder."
-clip_002.mp4,"Close-up of hands typing on a laptop keyboard in a modern office with floor-to-ceiling windows."
+clip_001.mp4,"CINESTYLE, A woman crosses a dim corridor while the camera follows with a restrained handheld drift. Low-key practical light leaves much of the hallway in shadow, with a narrow rim of warm light tracing her coat as she glances back. The palette stays muted and cool overall, broken by isolated amber highlights from wall fixtures. Shallow depth of field softens the distant background and keeps attention on her movement through the frame."
+clip_002.mp4,"CINESTYLE, Hands move across a laptop keyboard as a locked-off close shot holds steady on the desk surface. Cool daylight from tall windows mixes with soft interior fill, creating a clean corporate contrast across the keys and fingers. The image uses a restrained neutral grade with gentle reflections on metal and glass. Fine background blur and subtle screen glow give the workspace a polished contemporary texture."
 ```
 
 ### 描述校验规则
 
 生成的描述会经过严格校验以保证训练数据质量：
 
-- 最多 2 个句子
+- 英文输出，自动加上触发词 `CINESTYLE`
+- 最多 6 个句子，鼓励使用 4 到 6 个句子完整描述片段
+- 必须包含可见动作或时间推进线索
+- 必须包含镜头行为线索（如 `handheld`、`tracking shot`、`push-in`、`pan`、`locked-off`）
+- 必须包含电影风格词，并在结构化返回中填充 `style_terms_used`
 - 禁止风格词（`cinematic`、`masterpiece`、`4k`、`photorealistic` 等）
 - 禁止不确定用语（`maybe`、`possibly`、`appears to be`）
 - 禁止出现人名、角色名或电影名称
-- 禁止推断人物关系或情节 — 仅描述画面中直接可见的内容
+- 禁止推断人物关系、职业身份或情节动机
+- 禁止引用对白、字幕或屏幕文字
+- 仅描述画面中直接可见的内容，不使用 “in the first frame” 一类元叙述
 
 未通过校验的描述会进入修复循环（最多 2 次），修复失败则留空以便后续重试。
 
