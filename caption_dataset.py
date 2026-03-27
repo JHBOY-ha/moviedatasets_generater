@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Batch caption short video clips for generic movie LoRA training datasets.
+Batch caption short video clips for cinematic style LoRA training datasets.
 
 The script reads metadata.csv, samples frames from each listed video, sends
-those frames to an OpenAI-compatible vision endpoint, validates the returned
-caption, and writes the accepted result back to the prompt column.
+those frames to an OpenAI-compatible vision endpoint, generates captions that
+describe both visual content and cinematic style attributes (lighting, color
+grading, camera/lens, composition, texture), prepends a trigger word, validates
+the result, and writes the accepted caption back to the prompt column.
 """
 
 from __future__ import annotations
@@ -59,24 +61,26 @@ def _load_config() -> dict[str, Any]:
     return dict(_FALLBACK_CONFIG)
 
 
+TRIGGER_WORD = "CINESTYLE"
+
 BANNED_STYLE_TERMS = (
-    "cinematic",
     "masterpiece",
-    "epic",
-    "film still",
-    "highly detailed",
-    "dramatic lighting",
     "stunning",
     "gorgeous",
     "beautiful",
     "photorealistic",
     "ultra detailed",
+    "highly detailed",
     "4k",
     "8k",
     "award-winning",
     "best quality",
     "aesthetic",
-    "moody color grading",
+    "breathtaking",
+    "magnificent",
+    "incredible",
+    "amazing",
+    "perfect",
 )
 
 UNCERTAIN_TERMS = (
@@ -243,55 +247,116 @@ SUBJECT_WORDS = {
     "audience",
 }
 
+TEMPORAL_VIDEO_TERMS = (
+    "moves",
+    "moving",
+    "walks",
+    "walking",
+    "runs",
+    "running",
+    "turns",
+    "turning",
+    "looks",
+    "looking",
+    "glances",
+    "glancing",
+    "approaches",
+    "approaching",
+    "recedes",
+    "receding",
+    "enters frame",
+    "exits frame",
+    "drifts",
+    "drifting",
+    "flickers",
+    "flickering",
+    "sways",
+    "swaying",
+    "rises",
+    "rising",
+    "falls",
+    "falling",
+    "crosses frame",
+    "passes through",
+)
+
+CAMERA_MOTION_TERMS = (
+    "handheld",
+    "tracking shot",
+    "dolly in",
+    "dolly out",
+    "push-in",
+    "pull-back",
+    "pan",
+    "tilt",
+    "crane shot",
+    "locked-off",
+    "static camera",
+    "steadicam",
+    "follow shot",
+    "lateral movement",
+    "slow camera drift",
+    "subtle camera sway",
+)
+
 
 SYSTEM_PROMPT = """
-You write factual training captions for short movie clips.
+You write training captions for short movie clips used to train a cinematic style LoRA.
 
-Your job is to describe visible facts in English with enough detail for model
-training while keeping style language minimal.
+Your job is to describe the visible action, temporal progression, camera behavior,
+and cinematic visual style of each clip in English. The caption must help the model
+learn what makes these clips move and look like professional cinema.
 
 Rules:
-- Focus on subject, setting, action, visible objects, and spatial relationships.
-- When gender is visually apparent, use "man" or "woman" instead of "person". Use "person" or "figure" only when gender is genuinely unclear (e.g., distant silhouettes, heavy gear obscuring the body).
+- Describe only the essential subject, setting, and action needed to anchor the shot.
+- Prioritize what changes over the clip: motion, gesture, camera movement, and temporal progression.
+- ALWAYS describe the cinematic style attributes you can observe:
+  * Lighting: natural light, tungsten, neon, backlight, rim light, silhouette, high-key, low-key, volumetric light, harsh shadows, soft diffused light, etc.
+  * Color grading: warm tones, cool tones, teal-and-orange, desaturated, high contrast, muted palette, golden hour warmth, etc.
+  * Camera/lens: shallow depth of field, deep focus, wide-angle, telephoto compression, anamorphic lens flare, handheld, steadicam, tracking shot, push-in, pan, tilt, locked-off, etc.
+  * Texture/grain: film grain, motion blur, lens flare, bokeh, smoke/haze, etc.
+  * Composition: close-up, medium shot, wide shot, over-the-shoulder, low angle, high angle, Dutch angle, symmetrical framing, rule of thirds, etc.
+- Include at least one explicit motion or temporal cue and at least one camera behavior cue whenever visible.
+- Keep object and wardrobe detail minimal unless it affects the visual style or the motion in the clip.
+- When gender is visually apparent, "man" or "woman" is acceptable, but do not force identity details when they are not useful.
 - Never use character names, actor names, real-person names, movie titles, or franchise names.
-- Never use family or role words: father, mother, husband, wife, son, daughter, boss, leader, commander, scientist, politician, judge, witness, suspect, hero, villain. Use "man", "woman", "person", or "figure" instead.
-- Do not infer plot, relationships, professions, or motivations unless they are directly visible.
-- Do not quote dialogue, subtitles, or text on screen. Do not use quotation marks.
-- Write as a single continuous description. Do NOT use meta-references like "in the first frame", "in later frames", "across the frames", or "in earlier frames". Describe the scene as one unified moment or short action.
-- Prefer one detailed sentence. Two sentences maximum.
-- Use concrete visual details, not aesthetic praise.
-- Be precise about objects: distinguish wheeled vs tracked vehicles, types of weapons, architectural features, etc. Only describe what you can clearly identify.
+- Never use family or role words: father, mother, husband, wife, son, daughter, boss, leader, commander, scientist, politician, judge, witness, suspect, hero, villain.
+- Do not infer plot, relationships, or motivations unless directly visible.
+- Do not quote dialogue, subtitles, or text on screen.
+- Write as a single continuous description of the clip itself. Do NOT use meta-references like "in the first frame" or "across the frames".
+- Four to six sentences. Blend action, camera movement, and cinematic style naturally instead of separating them into rigid buckets.
+- Do NOT use empty praise words (masterpiece, stunning, gorgeous, beautiful, amazing, perfect, best quality, 4k, 8k). Use specific technical style terms instead.
 - Return JSON only with keys:
   caption, confidence, entities, scene_type, style_terms_used, reason
 
 Example environment:
 {
-  "caption": "Low clouds drift over a broad valley, with dark tree lines in the foreground and layered ridges fading into a pale overcast sky.",
+  "caption": "Low clouds drift slowly over a broad valley while layered ridges recede into an overcast horizon. A locked-off wide shot with deep focus holds the composition steady as mist curls between the peaks. Desaturated cool tones dominate the palette with muted greens and slate grays. Soft diffused natural light from an overcast sky eliminates harsh shadows, giving the landscape a restrained cinematic stillness. Faint atmospheric haze layers the depth, and subtle film grain textures the darker foreground areas.",
   "confidence": 0.91,
   "entities": ["clouds", "valley", "tree line", "ridges"],
   "scene_type": "environment",
-  "style_terms_used": [],
-  "reason": "Describes only visible landscape details."
+  "style_terms_used": ["locked-off wide shot", "deep focus", "desaturated cool tones", "soft diffused natural light"],
+  "reason": "Describes environmental motion plus camera behavior, color grading, lens, and lighting style."
 }
 
 Example person-focused:
 {
-  "caption": "A woman in a dark coat and brimmed hat stands near a window in a modest interior, turning slightly while soft light falls across nearby furniture and pale walls.",
+  "caption": "A woman near a window turns slightly in a dim interior as the camera holds a gentle push-in on her face. Warm tungsten key light from screen left casts soft shadows across her cheekbone while cool ambient fill from the window creates a subtle two-tone split. Shallow depth of field isolates her from the blurred room behind, with creamy bokeh circles visible in the background highlights. The muted warm palette leans into amber and brown tones with desaturated greens in the periphery. Slight film grain textures the darker shadow areas, adding an organic analog quality to the image.",
   "confidence": 0.9,
-  "entities": ["woman", "dark coat", "brimmed hat", "window", "interior"],
+  "entities": ["woman", "window", "interior"],
   "scene_type": "person-focused",
-  "style_terms_used": [],
-  "reason": "Uses visible gender and clothing, pose, and setting."
+  "style_terms_used": ["gentle push-in", "warm tungsten key light", "shallow depth of field", "film grain"],
+  "reason": "Describes visible motion with camera behavior, lighting, depth of field, and film texture."
 }
 
 Example action:
 {
-  "caption": "A man in a gray jacket sprints across a rain-soaked parking lot toward a black SUV, splashing through puddles while headlights from oncoming traffic illuminate the wet asphalt.",
+  "caption": "A man sprints across a rain-soaked parking lot, splashing through puddles as the handheld camera tracks alongside him at a low angle. Teal-and-orange color grading separates the cool wet asphalt from the warm sodium-vapor streetlights overhead. Headlight rim light catches the rain droplets around his silhouette, adding bright specular highlights along his edges. Slight motion blur on his limbs conveys speed while the background smears with lateral handheld shake. The shallow depth of field keeps his torso sharp against a defocused row of parked cars, and visible film grain in the shadow areas adds grit to the nighttime atmosphere.",
   "confidence": 0.92,
-  "entities": ["man", "gray jacket", "parking lot", "SUV", "puddles", "headlights"],
+  "entities": ["man", "parking lot", "puddles", "headlights"],
   "scene_type": "action",
-  "style_terms_used": [],
-  "reason": "Describes subject, motion, setting, and lighting conditions from visible details."
+  "style_terms_used": ["handheld camera", "tracks alongside", "teal-and-orange", "motion blur", "rim light", "low-angle follow shot"],
+  "reason": "Describes subject motion together with camera movement, color grade, lighting, and composition."
 }
 """.strip()
 
@@ -669,23 +734,28 @@ def build_generation_messages(video_name: str, features: VideoFeatures) -> list[
     }
 
     prompt = (
-        "Generate one detailed English caption for this short training clip.\n"
+        "Generate one video-centric cinematic training caption for this short movie clip.\n"
         "Requirements:\n"
-        "- Keep it concise\n"
-        "- One sentence preferred, two sentences maximum\n"
-        "- Describe visible facts only\n"
-        "- Use generic identities only\n"
-        "- Do not mention character names, actor names, real-person names, titles, or franchises\n"
+        "- Four to six sentences total\n"
+        "- Describe the clip as a short moving shot, not as a single still frame\n"
+        "- Include the essential subject and setting, but prioritize visible action, temporal change, and motion\n"
+        "- Include explicit camera behavior when visible (handheld, tracking shot, push-in, pan, tilt, locked-off, etc.)\n"
+        "- Include cinematic visual style (lighting, color grading, camera/lens, composition, texture/grain)\n"
+        "- Keep random object and wardrobe detail minimal unless it affects style or motion\n"
+        "- Use specific technical style terms, NOT vague praise\n"
+        "- Use generic identities only — no character names, actor names, real-person names, titles, or franchises\n"
         "- Do not infer profession, relationship, plot, or motivation unless directly visible\n"
-        "- Prioritize subject, environment, action, objects, and layout\n"
-        "- Keep style wording minimal and neutral\n"
         "- Do not mention subtitles, dialogue, or text on screen\n"
+        "- Blend action and style naturally instead of separating content from style too rigidly\n"
         "- Return JSON only\n\n"
         f"Clip metadata:\n{json.dumps(feature_summary, ensure_ascii=True)}"
     )
 
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-    for frame in features.frames:
+    for idx, frame in enumerate(features.frames):
+        content.append(
+            {"type": "text", "text": f"[Frame {idx + 1}/{len(features.frames)} at {frame.timestamp:.2f}s]"}
+        )
         content.append(
             {
                 "type": "image_url",
@@ -718,15 +788,24 @@ def build_repair_messages(
         "Keep the same visible content but:\n"
         "- Replace family/role words (father, mother, boss, scientist, etc.) with generic terms (man, woman, person, figure)\n"
         "- Remove any quoted text or dialogue references\n"
-        "- Keep it concise, one or two sentences\n"
-        "- Do not add names, titles, plot, relationship guesses, or aesthetic filler\n"
+        "- Four to six sentences describing the clip as moving video rather than a still image\n"
+        "- Include visible action or temporal progression when present\n"
+        "- Include specific cinematic style terms (lighting, color grading, camera/lens, composition, texture)\n"
+        "- Include explicit camera behavior when visible (handheld, tracking, push-in, pan, tilt, locked-off, etc.)\n"
+        "- Reduce incidental object detail that does not matter to the style or motion\n"
+        "- Do not add names, titles, plot, relationship guesses\n"
+        "- Do not use vague praise words (masterpiece, stunning, gorgeous, beautiful, amazing, perfect)\n"
+        "- Populate style_terms_used with the cinematic terms you used\n"
         "- Keep the JSON schema unchanged\n"
         "- Return JSON only\n\n"
         f"{json.dumps(repair_prompt, ensure_ascii=True)}"
     )
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     if features:
-        for frame in features.frames:
+        for idx, frame in enumerate(features.frames):
+            content.append(
+                {"type": "text", "text": f"[Frame {idx + 1}/{len(features.frames)} at {frame.timestamp:.2f}s]"}
+            )
             content.append(
                 {
                     "type": "image_url",
@@ -776,8 +855,8 @@ def post_chat_completion(
         {
             "model": config.model,
             "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": 350,
+            "temperature": 0.4,
+            "max_tokens": 600,
         }
     ).encode("utf-8")
 
@@ -857,6 +936,8 @@ def clean_caption_text(text: str) -> str:
     cleaned = cleaned.strip("\"' ")
     if cleaned and cleaned[-1] not in ".!?":
         cleaned += "."
+    if cleaned and not cleaned.startswith(TRIGGER_WORD):
+        cleaned = f"{TRIGGER_WORD}, {cleaned}"
     return cleaned
 
 
@@ -959,8 +1040,8 @@ def validate_candidate(candidate: CaptionCandidate) -> list[str]:
         errors.append("caption is empty")
         return errors
 
-    if sentence_count(caption) > 2:
-        errors.append("caption must contain one or two sentences")
+    if sentence_count(caption) > 6:
+        errors.append("caption must contain six sentences or fewer")
     if contains_cjk(caption):
         errors.append("caption must be English only")
     if ascii_ratio(caption) < 0.95:
@@ -979,6 +1060,15 @@ def validate_candidate(candidate: CaptionCandidate) -> list[str]:
         errors.append("caption contains relationship or role inference")
     if match_any(caption, STORY_INFERENCE_TERMS):
         errors.append("caption contains plot or motivation inference")
+    if not candidate.style_terms_used:
+        errors.append("caption must include cinematic style terms (lighting, color grading, camera, composition, texture)")
+    if not match_any(caption, TEMPORAL_VIDEO_TERMS):
+        errors.append("caption must include visible motion or temporal progression cues")
+    if not (
+        match_any(caption, CAMERA_MOTION_TERMS)
+        or any(match_any(term, CAMERA_MOTION_TERMS) for term in candidate.style_terms_used)
+    ):
+        errors.append("caption must include camera behavior cues when training video style")
     if not candidate.scene_type:
         errors.append("scene_type is missing")
     if not candidate.reason:
