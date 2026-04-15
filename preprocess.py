@@ -783,10 +783,11 @@ def export_clip(clip: Clip, settings: Settings, out_path: Path) -> bool:
             "50000000",
             "-analyzeduration",
             "100000000",
-            "-ss",
-            str(clip.start),
             "-i",
             str(settings.input_video),
+            # Seek after opening the input so re-encoded exports start on the exact frame.
+            "-ss",
+            str(clip.start),
             "-t",
             str(clip.duration),
             "-avoid_negative_ts",
